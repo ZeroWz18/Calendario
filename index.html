@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1f6feb">
+<title>Asistencia</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="topbar"><h1 id="title">Asistencia</h1></header>
+<main id="view"></main>
+<nav class="tabs" id="tabs">
+  <button data-tab="calendario">📅<span>Calendario</span></button>
+  <button data-tab="trabajadores">👷<span>Personal</span></button>
+  <button data-tab="reporte">📊<span>Reporte</span></button>
+  <button data-tab="respaldo">💾<span>Respaldo</span></button>
+</nav>
+<div id="toast" class="toast" hidden></div>
+<input type="file" id="importFile" accept="application/json,.json" hidden>
+<script src="xlsx.full.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
