@@ -12,7 +12,9 @@ const STATUSES = [
 ];
 const LABEL = Object.fromEntries(STATUSES.map(s => [s.k, s.l]));
 const DOW_NAMES = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+const DOW_SHORT = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
 const MONTHS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+const MONTHS_SHORT = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 /* ---------- datos ---------- */
@@ -44,6 +46,9 @@ function parseDate(s) {
 }
 const fmt = dt => ymd(dt.getFullYear(), dt.getMonth(), dt.getDate());
 const daysInMonth = (y, m) => new Date(y, m + 1, 0).getDate();
+function addDays(s, n) { const d = parseDate(s); return fmt(new Date(d.getFullYear(), d.getMonth(), d.getDate() + n)); }
+function weekStart(s) { const d = parseDate(s); return addDays(s, -((d.getDay() + 6) % 7)); } // semana inicia en lunes
+const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -69,15 +74,49 @@ function setRecord(date, wid, patch) {
   save();
 }
 function activeWorkers() { return db.workers.filter(w => w.active); }
-// Cuenta de días sin marcar: solo trabajadores activos, desde que se crearon, hasta hoy.
-function unmarkedOn(date) {
-  if (date > todayStr()) return 0;
-  return activeWorkers().filter(w => date >= w.since && !effective(w, date)).length;
+// Pendientes: solo hoy y días futuros. Días pasados no muestran indicador (null).
+function pendingOn(date) {
+  if (date < todayStr()) return null;
+  const ws = activeWorkers().filter(w => date >= w.since);
+  if (!ws.length) return null;
+  return ws.filter(w => !effective(w, date)).length;
+}
+function badgeFor(date) {
+  const n = pendingOn(date);
+  if (n === null) return '';
+  return n > 0 ? `<span class="badge warn">${n}</span>` : '<span class="badge ok">✓</span>';
+}
+
+/* ---------- avatar ---------- */
+function avatar(w, cls) {
+  if (w.photo) return `<img class="av ${cls}" src="${esc(w.photo)}" alt="">`;
+  const name = (w.name || '').trim();
+  const hue = ([...name].reduce((a, c) => a + c.charCodeAt(0), 0) * 47) % 360;
+  return `<span class="av ${cls}" style="background:hsl(${hue} 45% 45%)">${esc((name[0] || '?').toUpperCase())}</span>`;
+}
+function resizePhoto(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const S = 192, c = document.createElement('canvas');
+      c.width = c.height = S;
+      const m = Math.min(img.width, img.height);
+      c.getContext('2d').drawImage(img, (img.width - m) / 2, (img.height - m) / 2, m, m, 0, 0, S, S);
+      URL.revokeObjectURL(url);
+      resolve(c.toDataURL('image/jpeg', 0.8));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('imagen')); };
+    img.src = url;
+  });
 }
 
 /* ---------- UI base ---------- */
 const view = document.getElementById('view');
-const state = { tab: 'calendario', y: new Date().getFullYear(), m: new Date().getMonth(), day: null, editing: null, report: null };
+const state = {
+  tab: 'calendario', view: 'semana', cur: todayStr(), back: null, sel: null,
+  editing: null, draft: null, report: null,
+};
 {
   const t = new Date();
   state.report = { from: ymd(t.getFullYear(), t.getMonth(), 1), to: ymd(t.getFullYear(), t.getMonth(), daysInMonth(t.getFullYear(), t.getMonth())), worker: '' };
@@ -94,7 +133,7 @@ function setTitle(t) { document.getElementById('title').textContent = t; }
 function render() {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === state.tab));
   const scroll = view.scrollTop;
-  if (state.tab === 'calendario') state.day ? renderDay() : renderCalendar();
+  if (state.tab === 'calendario') renderCalendar();
   else if (state.tab === 'trabajadores') renderWorkers();
   else if (state.tab === 'reporte') renderReport();
   else renderBackup();
@@ -102,56 +141,127 @@ function render() {
 }
 
 /* ---------- calendario ---------- */
+const VIEWS = [['semana', 'Semana'], ['dia', 'Día'], ['mes', 'Mes'], ['anio', 'Año']];
+
+function periodTitle() {
+  const d = parseDate(state.cur);
+  if (state.view === 'semana') {
+    const a = parseDate(weekStart(state.cur)), b = parseDate(addDays(weekStart(state.cur), 6));
+    return `${a.getDate()} ${MONTHS_SHORT[a.getMonth()]} – ${b.getDate()} ${MONTHS_SHORT[b.getMonth()]} ${b.getFullYear()}`;
+  }
+  if (state.view === 'mes') return `${cap(MONTHS[d.getMonth()])} ${d.getFullYear()}`;
+  if (state.view === 'anio') return String(d.getFullYear());
+  return `${cap(DOW_NAMES[d.getDay()])} ${d.getDate()} de ${MONTHS[d.getMonth()]}`;
+}
+function shift(dir) {
+  const d = parseDate(state.cur);
+  if (state.view === 'semana') state.cur = addDays(state.cur, 7 * dir);
+  else if (state.view === 'dia') state.cur = addDays(state.cur, dir);
+  else if (state.view === 'mes') state.cur = fmt(new Date(d.getFullYear(), d.getMonth() + dir, 1));
+  else state.cur = fmt(new Date(d.getFullYear() + dir, d.getMonth(), 1));
+}
+function headerHtml() {
+  return `<div class="seg">${VIEWS.map(([k, l]) => `<button class="${state.view === k ? 'on' : ''}" data-act="setView" data-v="${k}">${l}</button>`).join('')}</div>
+    <div class="monthnav">
+      <button data-act="prev" aria-label="Anterior">‹</button>
+      <div class="name">${periodTitle()}</div>
+      <button data-act="next" aria-label="Siguiente">›</button>
+    </div>`;
+}
+
 function renderCalendar() {
+  if (state.sel) return renderWorkerDay();
   setTitle('Calendario');
-  const { y, m } = state;
-  const first = new Date(y, m, 1).getDay();
-  const offset = (first + 6) % 7; // semana inicia en lunes
+  const v = state.view;
+  let body = '';
+  if (v === 'semana') body = weekHtml();
+  else if (v === 'dia') body = dayHtml();
+  else if (v === 'mes') body = monthHtml();
+  else body = yearHtml();
+  const noWorkers = activeWorkers().length ? '' : '<p class="card muted" style="margin-top:12px">Primero agrega trabajadores en la pestaña «Personal».</p>';
+  view.innerHTML = headerHtml() + body + noWorkers;
+}
+
+function weekHtml() {
+  const start = weekStart(state.cur), today = todayStr();
+  let rows = '';
+  for (let i = 0; i < 7; i++) {
+    const date = addDays(start, i), dt = parseDate(date);
+    const dots = db.workers.map(w => {
+      const s = effective(w, date);
+      return s ? `<i class="dot s-${s}" title="${esc(w.name)}: ${LABEL[s]}"></i>` : '';
+    }).join('');
+    rows += `<button class="weekrow${date === today ? ' today' : ''}" data-act="openDay" data-date="${date}">
+      <span class="wd"><small>${DOW_SHORT[dt.getDay()]}</small><b>${dt.getDate()}</b></span>
+      <span class="dots">${dots}</span>${badgeFor(date)}</button>`;
+  }
+  return rows;
+}
+
+function monthHtml() {
+  const d = parseDate(state.cur), y = d.getFullYear(), m = d.getMonth();
+  const offset = (new Date(y, m, 1).getDay() + 6) % 7;
   const today = todayStr();
   let cells = '';
   for (let i = 0; i < offset; i++) cells += '<div class="cell empty"></div>';
-  for (let d = 1; d <= daysInMonth(y, m); d++) {
-    const date = ymd(y, m, d);
-    const un = unmarkedOn(date);
-    let badge = '';
-    if (un > 0) badge = `<span class="badge warn">${un}</span>`;
-    else if (date <= today && activeWorkers().length) badge = '<span class="badge ok">✓</span>';
-    cells += `<button class="cell${date === today ? ' today' : ''}" data-act="openDay" data-date="${date}"><span class="n">${d}</span>${badge}</button>`;
+  for (let n = 1; n <= daysInMonth(y, m); n++) {
+    const date = ymd(y, m, n);
+    cells += `<button class="cell${date === today ? ' today' : ''}" data-act="openDay" data-date="${date}"><span class="n">${n}</span><span class="slot">${badgeFor(date)}</span></button>`;
   }
-  view.innerHTML = `
-    <div class="monthnav">
-      <button data-act="prevMonth" aria-label="Mes anterior">‹</button>
-      <div class="name">${MONTHS[m]} ${y}</div>
-      <button data-act="nextMonth" aria-label="Mes siguiente">›</button>
-    </div>
-    <div class="grid">${['L', 'M', 'X', 'J', 'V', 'S', 'D'].map(x => `<div class="dow">${x}</div>`).join('')}${cells}</div>
-    <p class="legend"><span class="badge warn">3</span> = trabajadores sin marcar &nbsp; <span class="badge ok">✓</span> = todos marcados</p>
-    ${activeWorkers().length ? '' : '<p class="card muted">Primero agrega trabajadores en la pestaña «Personal».</p>'}`;
+  return `<div class="grid">${['L', 'M', 'X', 'J', 'V', 'S', 'D'].map(x => `<div class="dow">${x}</div>`).join('')}${cells}</div>`;
 }
 
-function renderDay() {
-  const date = state.day;
-  const dt = parseDate(date);
-  setTitle(`${DOW_NAMES[dt.getDay()]} ${dt.getDate()} de ${MONTHS[dt.getMonth()]}`);
-  const dayRecs = db.records[date] || {};
-  const list = db.workers.filter(w => w.active || (dayRecs[w.id] && dayRecs[w.id].s));
-  let html = `<div class="stack"><button class="btn sec" data-act="backCal">← Volver al calendario</button>
-    <button class="btn" data-act="markAll">✔ Marcar a todos como asistió</button></div>`;
-  if (!list.length) html += '<p class="card muted" style="margin-top:10px">No hay trabajadores activos.</p>';
-  for (const w of list) {
-    const r = dayRecs[w.id];
-    const explicit = r && r.s;
-    const eff = effective(w, date);
-    const sugg = !explicit && eff;
-    html += `<div class="card workerbox" data-w="${w.id}">
-      <div class="nm"><span>${esc(w.name)}${w.active ? '' : ' <span class="tag">inactivo</span>'}</span>
-        <span class="sug">${sugg ? 'descanso sugerido' : ''}</span></div>
-      <div class="chips">${STATUSES.map(s =>
-        `<button class="chip s-${s.k}${eff === s.k ? ' on' : ''}${sugg && eff === s.k ? ' sugg' : ''}" data-act="setStatus" data-w="${w.id}" data-s="${s.k}">${s.l}</button>`).join('')}</div>
-      <div class="note"><input type="text" maxlength="120" placeholder="Nota (opcional)" value="${esc(r ? r.n : '')}" data-act="note" data-w="${w.id}"></div>
-    </div>`;
+function yearHtml() {
+  const d = parseDate(state.cur), y = d.getFullYear(), today = todayStr();
+  let html = '<div class="year">';
+  for (let m = 0; m < 12; m++) {
+    const offset = (new Date(y, m, 1).getDay() + 6) % 7;
+    let days = '<span></span>'.repeat(offset);
+    for (let n = 1; n <= daysInMonth(y, m); n++) days += `<span${ymd(y, m, n) === today ? ' class="t"' : ''}>${n}</span>`;
+    html += `<button class="mini${m === d.getMonth() ? ' cur' : ''}" data-act="goMonth" data-m="${m}"><span class="mname">${MONTHS[m]}</span><span class="mgrid">${days}</span></button>`;
   }
-  view.innerHTML = html;
+  return html + '</div>';
+}
+
+function dayHtml() {
+  const date = state.cur;
+  const list = db.workers.filter(w => w.active || (rec(date, w.id) && rec(date, w.id).s));
+  let html = '<div class="stack">';
+  if (state.back) html += '<button class="btn sec" data-act="backCal">← Volver al calendario</button>';
+  if (list.length) html += '<button class="btn" data-act="markAll">✔ Marcar a todos como asistió</button>';
+  html += '</div>';
+  if (!list.length) return html + '<p class="card muted" style="margin-top:10px">No hay trabajadores activos.</p>';
+  html += '<div class="people">';
+  for (const w of list) {
+    const r = rec(date, w.id);
+    const eff = effective(w, date);
+    const sugg = !(r && r.s) && eff;
+    html += `<button class="person s-${eff || 'none'}" data-act="openWorker" data-w="${w.id}">
+      ${avatar(w, 'lg')}
+      <span class="pn">${esc(w.name)}${w.active ? '' : ' (inactivo)'}</span>
+      <span class="ps${eff ? '' : ' none'}${sugg ? ' sugg' : ''}">${eff ? LABEL[eff] + (sugg ? ' (sugerido)' : '') : 'Sin marcar'}</span>
+      <span class="pr">Descanso fijo: ${w.restDay == null ? 'ninguno' : DOW_NAMES[w.restDay]}</span>
+    </button>`;
+  }
+  return html + '</div>';
+}
+
+function renderWorkerDay() {
+  const w = db.workers.find(x => x.id === state.sel);
+  if (!w) { state.sel = null; return renderCalendar(); }
+  const date = state.cur, dt = parseDate(date);
+  const r = rec(date, w.id), eff = effective(w, date), sugg = !(r && r.s) && eff;
+  setTitle(w.name);
+  view.innerHTML = `<div class="sticky"><button class="btn sec" data-act="backList">← Volver a la lista</button></div>
+    <div class="card profile">${avatar(w, 'xl')}<div>
+      <b>${esc(w.name)}</b>
+      <div class="muted">${cap(DOW_NAMES[dt.getDay()])} ${dt.getDate()} de ${MONTHS[dt.getMonth()]}</div>
+      <div class="muted">Descanso fijo: ${w.restDay == null ? 'ninguno' : DOW_NAMES[w.restDay]}</div>
+    </div></div>
+    <div class="statuslist">${STATUSES.map(s =>
+      `<button class="status s-${s.k}${eff === s.k ? ' on' : ''}${sugg && eff === s.k ? ' sugg' : ''}" data-act="setStatus" data-w="${w.id}" data-s="${s.k}">${s.l}${sugg && eff === s.k ? ' · sugerido' : ''}</button>`).join('')}</div>
+    <div class="card" style="margin-top:12px"><label for="nNote">Nota (opcional)</label>
+      <input type="text" id="nNote" maxlength="120" placeholder="Escribe una nota" value="${esc(r ? r.n : '')}" data-act="note" data-w="${w.id}"></div>`;
 }
 
 /* ---------- trabajadores ---------- */
@@ -163,19 +273,24 @@ function renderWorkers() {
   setTitle('Personal');
   let form = '';
   if (state.editing) {
-    const w = state.editing === 'new' ? { name: '', restDay: null } : db.workers.find(x => x.id === state.editing);
+    const d = state.draft;
     form = `<div class="card stack" style="margin-bottom:12px">
       <h2>${state.editing === 'new' ? 'Nuevo trabajador' : 'Editar trabajador'}</h2>
-      <div><label for="wName">Nombre</label><input type="text" id="wName" maxlength="60" value="${esc(w.name)}"></div>
-      <div><label for="wRest">Día de descanso semanal</label><select id="wRest">${restOptions(w.restDay)}</select></div>
+      <div class="photorow">${avatar({ name: d.name, photo: d.photo }, 'xl')}
+        <div class="stack">
+          <button class="btn sec small" data-act="pickPhoto">📷 ${d.photo ? 'Cambiar foto' : 'Agregar foto'}</button>
+          ${d.photo ? '<button class="btn sec small" data-act="removePhoto">Quitar foto</button>' : ''}
+        </div></div>
+      <div><label for="wName">Nombre</label><input type="text" id="wName" maxlength="60" value="${esc(d.name)}"></div>
+      <div><label for="wRest">Día de descanso semanal</label><select id="wRest">${restOptions(d.restDay)}</select></div>
       <div class="row"><button class="btn sec" data-act="cancelEdit">Cancelar</button><button class="btn" data-act="saveWorker">Guardar</button></div>
     </div>`;
   } else {
     form = '<button class="btn" data-act="newWorker" style="margin-bottom:12px">＋ Agregar trabajador</button>';
   }
   const items = db.workers.map(w => `<div class="card worker">
-      <div class="info"><b>${esc(w.name)} ${w.active ? '' : '<span class="tag">inactivo</span>'}</b>
-        <span class="muted">Descanso: ${w.restDay == null ? 'ninguno' : DOW_NAMES[w.restDay]}</span></div>
+      <div class="top">${avatar(w, 'md')}<div class="info"><b>${esc(w.name)} ${w.active ? '' : '<span class="tag">inactivo</span>'}</b>
+        <span class="muted">Descanso: ${w.restDay == null ? 'ninguno' : DOW_NAMES[w.restDay]}</span></div></div>
       <div class="acts">
         <button class="btn sec small" data-act="editWorker" data-w="${w.id}">Editar</button>
         <button class="btn sec small" data-act="toggleWorker" data-w="${w.id}">${w.active ? 'Desactivar' : 'Activar'}</button>
@@ -241,8 +356,8 @@ function renderReport() {
     <div><label for="rFrom">Desde</label><input type="date" id="rFrom" value="${r.from}"></div>
     <div><label for="rTo">Hasta</label><input type="date" id="rTo" value="${r.to}"></div>
     <div><label for="rWorker">Trabajador</label><select id="rWorker"><option value="">Todos</option>${db.workers.map(w => `<option value="${w.id}"${r.worker === w.id ? ' selected' : ''}>${esc(w.name)}</option>`).join('')}</select></div>
-    <button class="btn" data-act="reportDownload">⬇ Descargar Excel</button>
-    <button class="btn sec" data-act="reportShare">📤 Compartir</button>
+    <button class="btn" data-act="reportShare">📤 Compartir Excel</button>
+    <button class="btn sec" data-act="reportDownload">⬇ Descargar Excel</button>
   </div>`;
 }
 
@@ -262,6 +377,7 @@ function validBackup(d) {
     if (!w || typeof w.id !== 'string' || typeof w.name !== 'string' || typeof w.active !== 'boolean') return false;
     if (!(w.restDay === null || (Number.isInteger(w.restDay) && w.restDay >= 0 && w.restDay <= 6))) return false;
     if (!parseDate(w.since)) return false;
+    if (w.photo != null && (typeof w.photo !== 'string' || !w.photo.startsWith('data:image/'))) return false;
     if (ids.has(w.id)) return false;
     ids.add(w.id);
   }
@@ -280,41 +396,61 @@ function validBackup(d) {
 document.getElementById('tabs').addEventListener('click', e => {
   const b = e.target.closest('button[data-tab]');
   if (!b) return;
-  state.tab = b.dataset.tab; state.day = null; state.editing = null;
+  state.tab = b.dataset.tab; state.sel = null; state.editing = null; state.draft = null;
   render();
 });
 
 const actions = {
-  prevMonth() { state.m--; if (state.m < 0) { state.m = 11; state.y--; } },
-  nextMonth() { state.m++; if (state.m > 11) { state.m = 0; state.y++; } },
-  openDay(el) { state.day = el.dataset.date; view.scrollTop = 0; },
-  backCal() { state.day = null; },
+  setView(el) { state.view = el.dataset.v; state.back = null; state.sel = null; view.scrollTop = 0; },
+  prev() { shift(-1); },
+  next() { shift(1); },
+  openDay(el) { state.back = state.view; state.cur = el.dataset.date; state.view = 'dia'; view.scrollTop = 0; },
+  goMonth(el) { const y = parseDate(state.cur).getFullYear(); state.cur = ymd(y, +el.dataset.m, 1); state.view = 'mes'; },
+  backCal() { state.view = state.back || 'semana'; state.back = null; state.sel = null; view.scrollTop = 0; },
+  openWorker(el) { state.sel = el.dataset.w; view.scrollTop = 0; },
+  backList() { state.sel = null; view.scrollTop = 0; },
   markAll() {
     let n = 0;
     for (const w of activeWorkers()) {
-      if (!effective(w, state.day)) { setRecord(state.day, w.id, { s: 'asistio' }); n++; }
+      if (!effective(w, state.cur)) { setRecord(state.cur, w.id, { s: 'asistio' }); n++; }
     }
     toast(n ? `${n} marcado(s) como asistió` : 'No había trabajadores sin marcar');
   },
   setStatus(el) {
     const w = db.workers.find(x => x.id === el.dataset.w);
     const s = el.dataset.s;
-    const r = rec(state.day, w.id);
+    const r = rec(state.cur, w.id);
     // Tocar el estado ya marcado lo quita (vuelve a sin marcar / descanso sugerido).
-    setRecord(state.day, w.id, { s: r && r.s === s ? null : s });
+    const quitar = r && r.s === s;
+    setRecord(state.cur, w.id, { s: quitar ? null : s });
+    state.sel = null; view.scrollTop = 0;
+    toast(quitar ? `${w.name}: estado quitado` : `${w.name}: ${LABEL[s]}`);
   },
-  newWorker() { state.editing = 'new'; },
-  editWorker(el) { state.editing = el.dataset.w; },
-  cancelEdit() { state.editing = null; },
+  newWorker() { state.editing = 'new'; state.draft = { name: '', restDay: null, photo: '' }; },
+  editWorker(el) {
+    const w = db.workers.find(x => x.id === el.dataset.w);
+    state.editing = w.id; state.draft = { name: w.name, restDay: w.restDay, photo: w.photo || '' };
+  },
+  cancelEdit() { state.editing = null; state.draft = null; },
+  pickPhoto() { document.getElementById('photoFile').click(); return false; },
+  removePhoto() { state.draft.photo = ''; },
   saveWorker() {
     const name = document.getElementById('wName').value.trim().replace(/\s+/g, ' ');
     const rv = document.getElementById('wRest').value;
     if (!name) { toast('Escribe un nombre'); return false; }
     const restDay = rv === '' ? null : +rv;
+    const photo = state.draft.photo || '';
     if (db.workers.some(w => w.id !== state.editing && w.name.toLowerCase() === name.toLowerCase())) { toast('Ya existe un trabajador con ese nombre'); return false; }
-    if (state.editing === 'new') db.workers.push({ id: uid(), name, restDay, active: true, since: todayStr() });
-    else { const w = db.workers.find(x => x.id === state.editing); w.name = name; w.restDay = restDay; }
-    save(); state.editing = null;
+    if (state.editing === 'new') {
+      const w = { id: uid(), name, restDay, active: true, since: todayStr() };
+      if (photo) w.photo = photo;
+      db.workers.push(w);
+    } else {
+      const w = db.workers.find(x => x.id === state.editing);
+      w.name = name; w.restDay = restDay;
+      if (photo) w.photo = photo; else delete w.photo;
+    }
+    save(); state.editing = null; state.draft = null;
   },
   toggleWorker(el) { const w = db.workers.find(x => x.id === el.dataset.w); w.active = !w.active; save(); },
   delWorker(el) {
@@ -334,15 +470,17 @@ const actions = {
     return false;
   },
   async reportShare() {
-    const rep = buildReport(); if (!rep) return;
+    const rep = buildReport(); if (!rep) return false;
     const blob = makeWorkbook(rep);
     const file = new File([blob], rep.name, { type: XLSX_MIME });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
       try { await navigator.share({ files: [file], title: rep.name }); }
-      catch (err) { if (err.name !== 'AbortError') download(blob, rep.name); }
+      catch (err) {
+        if (err.name !== 'AbortError') { download(blob, rep.name); toast('No se pudo abrir «Compartir» (' + err.name + '): se descargó el archivo'); }
+      }
     } else {
       download(blob, rep.name);
-      toast('Compartir no disponible: se descargó el archivo');
+      toast('Este navegador no permite compartir archivos: se descargó el Excel');
     }
     return false;
   },
@@ -362,12 +500,24 @@ view.addEventListener('click', async e => {
   const res = await fn(el);
   if (res !== false) render();
 });
+view.addEventListener('input', e => {
+  if (e.target.id === 'wName' && state.draft) state.draft.name = e.target.value;
+});
 view.addEventListener('change', e => {
   const t = e.target;
-  if (t.dataset.act === 'note') { setRecord(state.day, t.dataset.w, { n: t.value.trim() }); return; }
-  if (t.id === 'rFrom') state.report.from = t.value;
+  if (t.dataset.act === 'note') { setRecord(state.cur, t.dataset.w, { n: t.value.trim() }); return; }
+  if (t.id === 'wRest' && state.draft) state.draft.restDay = t.value === '' ? null : +t.value;
+  else if (t.id === 'rFrom') state.report.from = t.value;
   else if (t.id === 'rTo') state.report.to = t.value;
   else if (t.id === 'rWorker') state.report.worker = t.value;
+});
+
+document.getElementById('photoFile').addEventListener('change', async e => {
+  const input = e.target, file = input.files[0];
+  input.value = '';
+  if (!file || !state.draft) return;
+  try { state.draft.photo = await resizePhoto(file); render(); }
+  catch (err) { toast('No se pudo leer la imagen'); }
 });
 
 document.getElementById('importFile').addEventListener('change', async e => {
@@ -380,7 +530,7 @@ document.getElementById('importFile').addEventListener('change', async e => {
   const n = data.workers.length, d = Object.keys(data.records).length;
   if (!confirm(`Importar respaldo con ${n} trabajador(es) y ${d} día(s) con registros.\n\nSe REEMPLAZARÁN todos los datos actuales. ¿Continuar?`)) return;
   db = { v: 1, workers: data.workers, records: data.records };
-  state.report.worker = '';
+  state.report.worker = ''; state.sel = null;
   save(); render();
   toast('Respaldo importado');
 });

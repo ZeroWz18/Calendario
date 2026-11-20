@@ -1,4 +1,4 @@
-const CACHE = 'asistencia-v1';
+const CACHE = 'asistencia-v2';
 const FILES = ['./', './index.html', './app.js', './styles.css', './manifest.webmanifest', './xlsx.full.min.js', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
