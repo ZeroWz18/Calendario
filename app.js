@@ -115,7 +115,7 @@ function resizePhoto(file) {
 /* ---------- UI base ---------- */
 const view = document.getElementById('view');
 const state = {
-  tab: 'calendario', view: 'semana', cur: todayStr(), back: null, sel: null,
+  tab: 'calendario', view: 'dia', cur: todayStr(), back: null, sel: null,
   editing: null, draft: null, report: null,
 };
 {
@@ -142,7 +142,7 @@ function render() {
 }
 
 /* ---------- calendario ---------- */
-const VIEWS = [['semana', 'Semana'], ['dia', 'Día'], ['mes', 'Mes'], ['anio', 'Año']];
+const VIEWS = [['dia', 'Día'], ['semana', 'Semana'], ['mes', 'Mes'], ['anio', 'Año']];
 
 function periodTitle() {
   const d = parseDate(state.cur);
@@ -412,7 +412,7 @@ const actions = {
   next() { shift(1); },
   openDay(el) { state.back = state.view; state.cur = el.dataset.date; state.view = 'dia'; view.scrollTop = 0; },
   goMonth(el) { const y = parseDate(state.cur).getFullYear(); state.cur = ymd(y, +el.dataset.m, 1); state.view = 'mes'; },
-  backCal() { state.view = state.back || 'semana'; state.back = null; state.sel = null; view.scrollTop = 0; },
+  backCal() { state.view = state.back || 'dia'; state.back = null; state.sel = null; view.scrollTop = 0; },
   openWorker(el) { state.sel = el.dataset.w; view.scrollTop = 0; },
   backList() { state.sel = null; view.scrollTop = 0; },
   markAll() {
