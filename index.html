@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<header class="topbar"><h1 id="title">Asistencia</h1></header>
+<header class="topbar"><h1 id="title">Asistencia</h1><button class="gear" id="optBtn" aria-label="Opciones">⚙</button></header>
 <main id="view"></main>
 <nav class="tabs" id="tabs">
   <button data-tab="calendario">📅<span>Calendario</span></button>
@@ -20,6 +20,7 @@
   <button data-tab="respaldo">💾<span>Respaldo</span></button>
 </nav>
 <div id="toast" class="toast" hidden></div>
+<div id="opts" class="overlay" hidden><div class="sheet card stack"><h2>Opciones</h2><div><label>Tamaño de letra</label><div class="fsbtns" id="fsBtns"></div></div><p class="muted" style="margin:0">Solo cambia el tamaño del texto; tus datos no se tocan.</p><button class="btn" id="optsClose">Listo</button></div></div>
 <input type="file" id="importFile" accept="application/json,.json" hidden>
 <input type="file" id="photoFile" accept="image/*" hidden>
 <script src="xlsx.full.min.js"></script>

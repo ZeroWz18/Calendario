@@ -90,6 +90,7 @@ function badgeFor(date) {
 /* ---------- avatar ---------- */
 function avatar(w, cls) {
   if (w.photo) return `<img class="av ${cls}" src="${esc(w.photo)}" alt="">`;
+  if (w.icon) return `<span class="av ico ${cls}">${esc(w.icon)}</span>`;
   const name = (w.name || '').trim();
   const hue = ([...name].reduce((a, c) => a + c.charCodeAt(0), 0) * 47) % 360;
   return `<span class="av ${cls}" style="background:hsl(${hue} 45% 45%)">${esc((name[0] || '?').toUpperCase())}</span>`;
@@ -187,12 +188,13 @@ function weekHtml() {
   let rows = '';
   for (let i = 0; i < 7; i++) {
     const date = addDays(start, i), dt = parseDate(date);
-    const dots = db.workers.map(w => {
+    // Una bolita por trabajador: borde de color = estado marcado; punteado gris = sin marcar.
+    const dots = db.workers.filter(w => (w.active && date >= w.since) || (rec(date, w.id) && rec(date, w.id).s)).map(w => {
       const s = effective(w, date);
-      return s ? `<i class="dot s-${s}" title="${esc(w.name)}: ${LABEL[s]}"></i>` : '';
+      return `<span class="wav${s ? ' s-' + s : ' none'}" title="${esc(w.name)}: ${s ? LABEL[s] : 'Sin marcar'}">${avatar(w, 'xs')}</span>`;
     }).join('');
     rows += `<button class="weekrow${date === today ? ' today' : ''}" data-act="openDay" data-date="${date}">
-      <span class="wd"><small>${DOW_SHORT[dt.getDay()]}</small><b>${dt.getDate()}</b></span>
+      <span class="wd"><b>${cap(DOW_NAMES[dt.getDay()])}</b><small>${dt.getDate()} ${MONTHS_SHORT[dt.getMonth()]}</small></span>
       <span class="dots">${dots}</span>${badgeFor(date)}</button>`;
   }
   return rows;
@@ -265,6 +267,7 @@ function renderWorkerDay() {
 }
 
 /* ---------- trabajadores ---------- */
+const EMOJIS = ['🌸', '🌺', '🌻', '🌷', '🌹', '🌼', '💐', '🍀', '🌵', '🌴', '⭐', '🔥', '⚡', '🦋', '🐶', '🐱', '🐼', '🦁', '🐢', '🍎', '🚀', '⚽', '🎸'];
 function restOptions(sel) {
   const order = [1, 2, 3, 4, 5, 6, 0];
   return `<option value="">Ninguno</option>` + order.map(d => `<option value="${d}"${sel === d ? ' selected' : ''}>${DOW_NAMES[d][0].toUpperCase() + DOW_NAMES[d].slice(1)}</option>`).join('');
@@ -276,11 +279,13 @@ function renderWorkers() {
     const d = state.draft;
     form = `<div class="card stack" style="margin-bottom:12px">
       <h2>${state.editing === 'new' ? 'Nuevo trabajador' : 'Editar trabajador'}</h2>
-      <div class="photorow">${avatar({ name: d.name, photo: d.photo }, 'xl')}
+      <div class="photorow">${avatar({ name: d.name, photo: d.photo, icon: d.icon }, 'xl')}
         <div class="stack">
           <button class="btn sec small" data-act="pickPhoto">📷 ${d.photo ? 'Cambiar foto' : 'Agregar foto'}</button>
           ${d.photo ? '<button class="btn sec small" data-act="removePhoto">Quitar foto</button>' : ''}
         </div></div>
+      <div><label>O elige un icono (en lugar de la foto)</label>
+        <div class="emojis"><button class="emo${!d.icon && !d.photo ? ' on' : ''}" data-act="pickIcon" data-i="">Aa</button>${EMOJIS.map(e => `<button class="emo${d.icon === e && !d.photo ? ' on' : ''}" data-act="pickIcon" data-i="${e}">${e}</button>`).join('')}</div></div>
       <div><label for="wName">Nombre</label><input type="text" id="wName" maxlength="60" value="${esc(d.name)}"></div>
       <div><label for="wRest">Día de descanso semanal</label><select id="wRest">${restOptions(d.restDay)}</select></div>
       <div class="row"><button class="btn sec" data-act="cancelEdit">Cancelar</button><button class="btn" data-act="saveWorker">Guardar</button></div>
@@ -378,6 +383,7 @@ function validBackup(d) {
     if (!(w.restDay === null || (Number.isInteger(w.restDay) && w.restDay >= 0 && w.restDay <= 6))) return false;
     if (!parseDate(w.since)) return false;
     if (w.photo != null && (typeof w.photo !== 'string' || !w.photo.startsWith('data:image/'))) return false;
+    if (w.icon != null && (typeof w.icon !== 'string' || w.icon.length > 8)) return false;
     if (ids.has(w.id)) return false;
     ids.add(w.id);
   }
@@ -426,11 +432,12 @@ const actions = {
     state.sel = null; view.scrollTop = 0;
     toast(quitar ? `${w.name}: estado quitado` : `${w.name}: ${LABEL[s]}`);
   },
-  newWorker() { state.editing = 'new'; state.draft = { name: '', restDay: null, photo: '' }; },
+  newWorker() { state.editing = 'new'; state.draft = { name: '', restDay: null, photo: '', icon: '' }; },
   editWorker(el) {
     const w = db.workers.find(x => x.id === el.dataset.w);
-    state.editing = w.id; state.draft = { name: w.name, restDay: w.restDay, photo: w.photo || '' };
+    state.editing = w.id; state.draft = { name: w.name, restDay: w.restDay, photo: w.photo || '', icon: w.icon || '' };
   },
+  pickIcon(el) { state.draft.icon = el.dataset.i; state.draft.photo = ''; },
   cancelEdit() { state.editing = null; state.draft = null; },
   pickPhoto() { document.getElementById('photoFile').click(); return false; },
   removePhoto() { state.draft.photo = ''; },
@@ -440,15 +447,18 @@ const actions = {
     if (!name) { toast('Escribe un nombre'); return false; }
     const restDay = rv === '' ? null : +rv;
     const photo = state.draft.photo || '';
+    const icon = photo ? '' : (state.draft.icon || '');
     if (db.workers.some(w => w.id !== state.editing && w.name.toLowerCase() === name.toLowerCase())) { toast('Ya existe un trabajador con ese nombre'); return false; }
     if (state.editing === 'new') {
       const w = { id: uid(), name, restDay, active: true, since: todayStr() };
       if (photo) w.photo = photo;
+      if (icon) w.icon = icon;
       db.workers.push(w);
     } else {
       const w = db.workers.find(x => x.id === state.editing);
       w.name = name; w.restDay = restDay;
       if (photo) w.photo = photo; else delete w.photo;
+      if (icon) w.icon = icon; else delete w.icon;
     }
     save(); state.editing = null; state.draft = null;
   },
@@ -516,7 +526,7 @@ document.getElementById('photoFile').addEventListener('change', async e => {
   const input = e.target, file = input.files[0];
   input.value = '';
   if (!file || !state.draft) return;
-  try { state.draft.photo = await resizePhoto(file); render(); }
+  try { state.draft.photo = await resizePhoto(file); state.draft.icon = ''; render(); }
   catch (err) { toast('No se pudo leer la imagen'); }
 });
 
@@ -534,6 +544,31 @@ document.getElementById('importFile').addEventListener('change', async e => {
   save(); render();
   toast('Respaldo importado');
 });
+
+/* ---------- opciones (tamaño de letra) ---------- */
+const UI_KEY = 'asistencia.ui';
+const FONT_SIZES = [['Pequeña', 90], ['Normal', 100], ['Grande', 115], ['Muy grande', 130]];
+const ui = { fs: 100 };
+try {
+  const u = JSON.parse(localStorage.getItem(UI_KEY));
+  if (u && FONT_SIZES.some(f => f[1] === u.fs)) ui.fs = u.fs;
+} catch (e) { /* sin preferencia guardada */ }
+function applyUi() { document.documentElement.style.fontSize = ui.fs + '%'; }
+function renderOpts() {
+  document.getElementById('fsBtns').innerHTML = FONT_SIZES.map(([l, v]) => `<button class="btn sec${ui.fs === v ? ' on' : ''}" data-fs="${v}">${l}</button>`).join('');
+}
+const opts = document.getElementById('opts');
+document.getElementById('optBtn').addEventListener('click', () => { renderOpts(); opts.hidden = false; });
+document.getElementById('optsClose').addEventListener('click', () => { opts.hidden = true; });
+opts.addEventListener('click', e => {
+  if (e.target === opts) { opts.hidden = true; return; }
+  const b = e.target.closest('[data-fs]');
+  if (!b) return;
+  ui.fs = +b.dataset.fs;
+  try { localStorage.setItem(UI_KEY, JSON.stringify(ui)); } catch (err) { /* sin almacenamiento */ }
+  applyUi(); renderOpts(); render();
+});
+applyUi();
 
 render();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
